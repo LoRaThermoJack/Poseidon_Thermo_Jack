@@ -1,0 +1,114 @@
+#include <SPI.h>                   // Include libraries
+#include <LoRa.h>
+#include <Wire.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <SoftwareSerial.h>
+
+#define nss 8
+#define rst 9
+#define dio0 7
+#define ONE_WIRE_BUS 10            // Pin for DS18B20
+
+byte MasterNode = 0xFF;     
+byte Node2 = 0xCC; 
+
+OneWire oneWire(ONE_WIRE_BUS);     
+DallasTemperature tempSensor(&oneWire); 
+
+SoftwareSerial gpsSerial(4, 5);    // RX, TX pins for GPS
+
+// Sensor pins
+const int accelXPin = 26;          // Analog pin for Accelerometer X-axis
+const int accelYPin = 27;          // Analog pin for Accelerometer Y-axis
+const int accelZPin = 28;          // Analog pin for Accelerometer Z-axis
+const int pulsePin = 29;           // Analog pin for Pulse rate
+const int peltierPin = 30;         // Analog pin for Peltier status
+
+String outgoing;                   // Outgoing message
+byte msgCount = 0;                 // Count of outgoing messages
+unsigned long lastSendTime = 0;    // Last send time
+int interval = 2000;               // Interval between sends (2 seconds)
+
+void setup() {
+  Serial.begin(9600);               // Initialize Serial
+  gpsSerial.begin(9600);            // Initialize GPS serial
+  pinMode(accelXPin, INPUT);
+  pinMode(accelYPin, INPUT);
+  pinMode(accelZPin, INPUT);
+  pinMode(pulsePin, INPUT);
+  pinMode(peltierPin, INPUT);
+
+  tempSensor.begin();               // Initialize temperature sensor
+  LoRa.setPins(nss, rst, dio0);
+
+  if (!LoRa.begin(433E6)) {         // Initialize LoRa at 433 MHz
+    Serial.println("LoRa init failed. Check your connections.");
+    while (true);                   // If failed, do nothing
+  }
+  Serial.println("LoRa init succeeded.");
+}
+
+void loop() {
+  if (millis() - lastSendTime > interval) {
+    readAndSendSensorData();
+    lastSendTime = millis();        // Timestamp the message
+  }
+}
+
+void readAndSendSensorData() {
+  // Read Accelerometer data
+  int accelX = analogRead(accelXPin);
+  int accelY = analogRead(accelYPin);
+  int accelZ = analogRead(accelZPin);
+  
+  // Read Pulse rate sensor
+  int pulseRate = analogRead(pulsePin);
+
+  // Read Peltier status
+  int peltierStatus = analogRead(peltierPin);
+
+  // Read Temperature from DS18B20
+  tempSensor.requestTemperatures();
+  float temperature = tempSensor.getTempCByIndex(0);
+
+  // Read GPS data
+  String gpsData = getGPSData();
+
+  // Build message
+  outgoing = String("AX:") + accelX + ",AY:" + accelY + ",AZ:" + accelZ + ",";
+  outgoing += "PR:" + pulseRate + ",PT:" + peltierStatus + ",";
+  outgoing += "TMP:" + temperature + ",GPS:" + gpsData;
+
+  sendMessage(outgoing, MasterNode, Node2);
+  Serial.println("Sent: " + outgoing);
+}
+
+String getGPSData() {
+  String latitude = "NA";
+  String longitude = "NA";
+
+  while (gpsSerial.available() > 0) {
+    String line = gpsSerial.readStringUntil('\n');
+    if (line.startsWith("$GPGGA")) { // Parse GPGGA line for GPS data
+      int latIndex = line.indexOf(',', 17) + 1;
+      int longIndex = line.indexOf(',', latIndex) + 1;
+      
+      latitude = line.substring(latIndex, latIndex + 10);
+      longitude = line.substring(longIndex, longIndex + 10);
+      break;
+    }
+  }
+  return latitude + "," + longitude;
+}
+
+void sendMessage(String message, byte MasterNode, byte otherNode) {
+  LoRa.beginPacket();
+  LoRa.write(otherNode);            // Add destination address
+  LoRa.write(MasterNode);           // Add sender address
+  LoRa.write(msgCount);             // Add message ID
+  LoRa.write(message.length());     // Add payload length
+  LoRa.print(message);              // Add payload
+  LoRa.endPacket();
+  msgCount++;
+}
